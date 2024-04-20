@@ -3,7 +3,7 @@
  */
 // tslint:disable:no-shadowed-variable prefer-for-of
 
-import {IContext, NoopContext} from "./util";
+import { IContext, NoopContext } from "./util";
 
 export type CheckerFunc = (value: any, ctx: IContext) => boolean;
 
@@ -11,7 +11,7 @@ export type CheckerFunc = (value: any, ctx: IContext) => boolean;
 export abstract class TType {
   // allowedProps is used for intersections and inheritance, since strict checks require member
   // types to share properties.
-  public abstract getChecker(suite: ITypeSuite, strict: boolean, allowedProps?: Set<string>): CheckerFunc;
+  public abstract getChecker(suite: ITypeSuite, strict: boolean, isPartial?: boolean, allowedProps?: Set<string>): CheckerFunc;
 }
 
 /**
@@ -44,12 +44,12 @@ function getNamedType(suite: ITypeSuite, name: string): TType {
  */
 export function name(value: string): TName { return new TName(value); }
 export class TName extends TType {
-  private _checkerBeingBuilt: CheckerFunc|undefined;
+  private _checkerBeingBuilt: CheckerFunc | undefined;
   private _failMsg: string;
 
   constructor(public name: string) { super(); this._failMsg = `is not a ${name}`; }
 
-  public getChecker(suite: ITypeSuite, strict: boolean, allowedProps?: Set<string>): CheckerFunc {
+  public getChecker(suite: ITypeSuite, strict: boolean, isPartial: boolean = false, allowedProps?: Set<string>): CheckerFunc {
     // Using names, we can reference a type recursively in its own definition. To avoid an
     // infinite recursion in getChecker() calls, we cache and reuse the checker that's being built
     // when it references its own TName node. Note that it's important to reuse the result only
@@ -63,7 +63,7 @@ export class TName extends TType {
     if (!checkerFunc) {
       this._checkerBeingBuilt = (value, ctx) => checkerFunc!(value, ctx);
       try {
-        checkerFunc = this._getChecker(suite, strict, allowedProps);
+        checkerFunc = this._getChecker(suite, strict, isPartial, allowedProps);
       } finally {
         this._checkerBeingBuilt = undefined;
       }
@@ -71,9 +71,9 @@ export class TName extends TType {
     return checkerFunc;
   }
 
-  private _getChecker(suite: ITypeSuite, strict: boolean, allowedProps?: Set<string>): CheckerFunc {
+  private _getChecker(suite: ITypeSuite, strict: boolean, isPartial: boolean, allowedProps?: Set<string>): CheckerFunc {
     const ttype = getNamedType(suite, this.name);
-    const checker = ttype.getChecker(suite, strict, allowedProps);
+    const checker = ttype.getChecker(suite, strict, isPartial, allowedProps);
     if (ttype instanceof BasicType || ttype instanceof TName) { return checker; }
     // For complex types, add an additional "is not a <Type>" message on failure.
     return (value: any, ctx: IContext) => checker(value, ctx) ? true : ctx.fail(null, this._failMsg, 0);
@@ -131,7 +131,7 @@ export class TArray extends TType {
 export function rest(typeSpec: TypeSpec): RestType {
   return new RestType(typeSpec);
 }
-export class RestType extends TType{
+export class RestType extends TType {
   private _start?: number;
   constructor(public typeSpec: TypeSpec) { super(); }
 
@@ -228,8 +228,8 @@ export class TUnion extends TType {
     }
   }
 
-  public getChecker(suite: ITypeSuite, strict: boolean, allowedProps?: Set<string>): CheckerFunc {
-    const itemCheckers = this.ttypes.map((t) => t.getChecker(suite, strict, allowedProps));
+  public getChecker(suite: ITypeSuite, strict: boolean, isPartial: boolean = false, allowedProps?: Set<string>): CheckerFunc {
+    const itemCheckers = this.ttypes.map((t) => t.getChecker(suite, strict, isPartial, allowedProps));
     return (value: any, ctx: IContext) => {
       const ur = ctx.unionResolver();
       for (let i = 0; i < itemCheckers.length; i++) {
@@ -253,8 +253,8 @@ export class TIntersection extends TType {
     super();
   }
 
-  public getChecker(suite: ITypeSuite, strict: boolean, allowedProps: Set<string> = new Set()): CheckerFunc {
-    const itemCheckers = this.ttypes.map((t) => t.getChecker(suite, strict, allowedProps));
+  public getChecker(suite: ITypeSuite, strict: boolean, isPartial: boolean = false, allowedProps: Set<string> = new Set()): CheckerFunc {
+    const itemCheckers = this.ttypes.map((t) => t.getChecker(suite, strict, isPartial, allowedProps));
     return (value: any, ctx: IContext) => {
       return itemCheckers.every(checker => {
         checker(value, ctx.fork());
@@ -265,16 +265,33 @@ export class TIntersection extends TType {
 }
 
 /**
+ * Defines a partial type.
+ */
+export function partial(typeSpec: TypeSpec): TPartial { return new TPartial(parseSpec(typeSpec)); }
+export class TPartial extends TType {
+  constructor(public ttype: TType) {
+    super();
+  }
+
+  public getChecker(suite: ITypeSuite, strict: boolean): CheckerFunc {
+    const itemChecker = this.ttype.getChecker(suite, strict, true);
+    return (value: any, ctx: IContext) => {
+      return value === undefined || itemChecker(value, ctx);
+    };
+  }
+}
+
+/**
  * Defines an enum type, e.g. enum({'A': 1, 'B': 2}).
  */
-export function enumtype(values: {[name: string]: string|number}): TEnumType {
+export function enumtype(values: { [name: string]: string | number }): TEnumType {
   return new TEnumType(values);
 }
 export class TEnumType extends TType {
-  public readonly validValues: Set<string|number> = new Set();
+  public readonly validValues: Set<string | number> = new Set();
   private _failMsg: string = "is not a valid enum value";
 
-  constructor(public members: {[name: string]: string|number}) {
+  constructor(public members: { [name: string]: string | number }) {
     super();
     this.validValues = new Set(Object.keys(members).map((name) => members[name]));
   }
@@ -309,13 +326,13 @@ export class TEnumLiteral extends TType {
   }
 }
 
-function makeIfaceProps(props: {[name: string]: TOptional|TypeSpec}): TProp[] {
+function makeIfaceProps(props: { [name: string]: TOptional | TypeSpec }): TProp[] {
   return Object.keys(props)
-    .filter((name: string|typeof indexKey) => (name !== indexKey))
+    .filter((name: string | typeof indexKey) => (name !== indexKey))
     .map((name: string) => makeIfaceProp(name, props[name]));
 }
 
-function makeIfaceProp(name: string, prop: TOptional|TypeSpec): TProp {
+function makeIfaceProp(name: string, prop: TOptional | TypeSpec): TProp {
   return prop instanceof TOptional ?
     new TProp(name, prop.ttype, true) :
     new TProp(name, parseSpec(prop), false);
@@ -334,25 +351,25 @@ export const indexKey: unique symbol = Symbol();
  * Defines an interface. The first argument is an array of interfaces that it extends, and the
  * second is an array of properties.
  */
-export function iface(bases: string[], props: {[name: string]: TOptional|TypeSpec}): TIface {
+export function iface(bases: string[], props: { [name: string]: TOptional | TypeSpec }): TIface {
   return new TIface(bases, makeIfaceProps(props), props[indexKey as any]);
 }
 export class TIface extends TType {
   public indexType?: TType;
   private propSet: Set<string>;
 
-  constructor(public bases: string[], public props: TProp[], indexType?: TOptional|TypeSpec) {
+  constructor(public bases: string[], public props: TProp[], indexType?: TOptional | TypeSpec) {
     super();
     this.indexType = indexType ? parseSpec(indexType) : undefined;
     this.propSet = new Set(props.map((p) => p.name));
   }
 
-  public getChecker(suite: ITypeSuite, strict: boolean, allowedProps: Set<string> = new Set()): CheckerFunc {
+  public getChecker(suite: ITypeSuite, strict: boolean, isPartial: boolean = false, allowedProps: Set<string> = new Set()): CheckerFunc {
     this.propSet.forEach((prop) => allowedProps.add(prop));
 
-    const baseCheckers = this.bases.map((b) => getNamedType(suite, b).getChecker(suite, strict, allowedProps));
-    const propCheckers = this.props.map((prop) => prop.ttype.getChecker(suite, strict));
-    const indexTypeChecker = this.indexType?.getChecker(suite, strict);
+    const baseCheckers = this.bases.map((b) => getNamedType(suite, b).getChecker(suite, strict, isPartial, allowedProps));
+    const propCheckers = this.props.map((prop) => prop.ttype.getChecker(suite, strict, isPartial));
+    const indexTypeChecker = this.indexType?.getChecker(suite, strict, isPartial);
     const testCtx = new NoopContext();
 
     // Consider a prop required if it's not optional AND does not allow for undefined as a value.
@@ -371,7 +388,7 @@ export class TIface extends TType {
         const name = this.props[i].name;
         const v = value[name];
         if (v === undefined) {
-          if (isPropRequired[i]) {
+          if (isPropRequired[i] && !isPartial) {
             ctx.fork().fail(name, "is missing", 1);
             if (!ctx.completeFork()) {
               return false;
@@ -433,7 +450,7 @@ export class TOptional extends TType {
  * Defines a property in an interface.
  */
 export class TProp {
-  constructor(public name: string, public ttype: TType, public isOpt: boolean) {}
+  constructor(public name: string, public ttype: TType, public isOpt: boolean) { }
 }
 
 /**
@@ -460,7 +477,7 @@ export function param(name: string, typeSpec: TypeSpec, isOpt?: boolean): TParam
   return new TParam(name, parseSpec(typeSpec), Boolean(isOpt));
 }
 export class TParam {
-  constructor(public name: string, public ttype: TType, public isOpt: boolean) {}
+  constructor(public name: string, public ttype: TType, public isOpt: boolean) { }
 }
 
 /**
@@ -514,20 +531,20 @@ export class BasicType extends TType {
  * Defines the suite of basic types.
  */
 export const basicTypes: ITypeSuite = {
-  any:        new BasicType((v) => true, "is invalid"),
-  unknown:    new BasicType((v) => true, "is invalid"),
-  number:     new BasicType((v) => (typeof v === "number"), "is not a number"),
-  object:     new BasicType((v) => (typeof v === "object" && v), "is not an object"),
-  boolean:    new BasicType((v) => (typeof v === "boolean"), "is not a boolean"),
-  string:     new BasicType((v) => (typeof v === "string"), "is not a string"),
-  symbol:     new BasicType((v) => (typeof v === "symbol"), "is not a symbol"),
-  void:       new BasicType((v) => (v == null), "is not void"),
-  undefined:  new BasicType((v) => (v === undefined), "is not undefined"),
-  null:       new BasicType((v) => (v === null), "is not null"),
-  never:      new BasicType((v) => false, "is unexpected"),
+  any: new BasicType((v) => true, "is invalid"),
+  unknown: new BasicType((v) => true, "is invalid"),
+  number: new BasicType((v) => (typeof v === "number"), "is not a number"),
+  object: new BasicType((v) => (typeof v === "object" && v), "is not an object"),
+  boolean: new BasicType((v) => (typeof v === "boolean"), "is not a boolean"),
+  string: new BasicType((v) => (typeof v === "string"), "is not a string"),
+  symbol: new BasicType((v) => (typeof v === "symbol"), "is not a symbol"),
+  void: new BasicType((v) => (v == null), "is not void"),
+  undefined: new BasicType((v) => (v === undefined), "is not undefined"),
+  null: new BasicType((v) => (v === null), "is not null"),
+  never: new BasicType((v) => false, "is unexpected"),
 
-  Date:       new BasicType(getIsNativeChecker("[object Date]"), "is not a Date"),
-  RegExp:     new BasicType(getIsNativeChecker("[object RegExp]"), "is not a RegExp"),
+  Date: new BasicType(getIsNativeChecker("[object Date]"), "is not a Date"),
+  RegExp: new BasicType(getIsNativeChecker("[object RegExp]"), "is not a RegExp"),
 };
 
 // This approach for checking native object types mirrors that of lodash. Its advantage over
@@ -548,7 +565,7 @@ if (typeof Buffer !== "undefined") {
 
 // Support typed arrays of various flavors
 for (const array of [Int8Array, Uint8Array, Uint8ClampedArray, Int16Array, Uint16Array,
-                     Int32Array, Uint32Array, Float32Array, Float64Array, ArrayBuffer]) {
+  Int32Array, Uint32Array, Float32Array, Float64Array, ArrayBuffer]) {
   basicTypes[array.name] = new BasicType((v) => (v instanceof array), `is not a ${array.name}`);
 }
 
